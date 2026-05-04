@@ -5,6 +5,8 @@ import android.graphics.Typeface
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.BoxWithConstraintsScope
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.defaultMinSize
@@ -13,7 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,7 +28,6 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalInspectionMode
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.Dp
@@ -35,7 +35,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastForEach
 import com.jet.compass.internal.CompassSensorEffect
 import kotlin.math.cos
-import kotlin.math.roundToInt
 import kotlin.math.sin
 
 private data class CardinalPoint(
@@ -50,26 +49,28 @@ private val CardinalPoints = listOf(
     CardinalPoint(label = "W", degrees = 270f),
 )
 
+private val CardinalTickDegrees = setOf(0, 90, 180, 270)
+
 private const val FULL_CIRCLE_DEGREES = 360
 private const val NORTH_OFFSET_DEGREES = 90f
-private const val TICK_INTERVAL_DEGREES = 5
-private const val TICK_COUNT = FULL_CIRCLE_DEGREES / TICK_INTERVAL_DEGREES
-private const val MAJOR_TICK_INTERVAL_DEGREES = 30
 
 
 @Composable
 fun Compass(
     modifier: Modifier = Modifier,
     state: CompassState = rememberCompassState(),
+    observeSensors: Boolean = true,
     type: CompassType = CompassType.Circular,
     colors: CompassColors = CompassDefaults.colors(),
+    dimensions: CompassDimensions = CompassDefaults.dimensions(),
+    tickDensity: CompassTickDensity = CompassDefaults.TickDensity,
+    highlightDirectionDegrees: Float? = null,
     minSize: Dp = CompassDefaults.MinSize,
-    showHeading: Boolean = true,
     notSupportedContent: @Composable BoxScope.() -> Unit = {
         CompassDefaults.NotSupportedContent(colors)
     },
 ) {
-    if (!LocalInspectionMode.current) {
+    if (observeSensors && !LocalInspectionMode.current) {
         CompassSensorEffect(state = state)
     }
 
@@ -78,8 +79,10 @@ fun Compass(
         state = state,
         type = type,
         colors = colors,
+        dimensions = dimensions,
+        tickDensity = tickDensity,
+        highlightDirectionDegrees = highlightDirectionDegrees,
         minSize = minSize,
-        showHeading = showHeading,
         notSupportedContent = notSupportedContent,
     )
 }
@@ -90,14 +93,17 @@ private fun CompassImpl(
     state: CompassState,
     type: CompassType,
     colors: CompassColors,
+    dimensions: CompassDimensions,
+    tickDensity: CompassTickDensity,
+    highlightDirectionDegrees: Float?,
     minSize: Dp,
-    showHeading: Boolean,
     notSupportedContent: @Composable BoxScope.() -> Unit,
 ) {
     if (state.availability == CompassAvailability.NotSupported) {
         NotSupportedCompass(
             modifier = modifier,
             colors = colors,
+            dimensions = dimensions,
             minSize = minSize,
             content = notSupportedContent,
         )
@@ -112,7 +118,7 @@ private fun CompassImpl(
         color = colors.containerColor,
         contentColor = colors.contentColor,
         border = BorderStroke(
-            width = CompassDefaults.OutlineStrokeWidth,
+            width = dimensions.outlineStrokeWidth,
             color = colors.outlineColor,
         ),
     ) {
@@ -121,7 +127,9 @@ private fun CompassImpl(
                 CircularCompass(
                     headingDegrees = state.headingDegrees,
                     colors = colors,
-                    showHeading = showHeading,
+                    dimensions = dimensions,
+                    tickDensity = tickDensity,
+                    highlightDirectionDegrees = highlightDirectionDegrees,
                 )
             }
         }
@@ -132,28 +140,29 @@ private fun CompassImpl(
 private fun CircularCompass(
     headingDegrees: Float,
     colors: CompassColors,
-    showHeading: Boolean,
+    dimensions: CompassDimensions,
+    tickDensity: CompassTickDensity,
+    highlightDirectionDegrees: Float?,
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(all = CompassDefaults.ContentPadding),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            drawCircularCompass(
-                headingDegrees = headingDegrees,
-                colors = colors,
-            )
-        }
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val dimensionScale = dimensions.scaleFor(availableSize = minCompassDimension())
 
-        if (showHeading) {
-            Text(
-                text = headingDegrees.toHeadingText(),
-                color = colors.contentColor,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(all = dimensions.contentPadding.scaledBy(scale = dimensionScale)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawCircularCompass(
+                    headingDegrees = headingDegrees,
+                    colors = colors,
+                    dimensions = dimensions,
+                    tickDensity = tickDensity,
+                    highlightDirectionDegrees = highlightDirectionDegrees,
+                    dimensionScale = dimensionScale,
+                )
+            }
         }
     }
 }
@@ -162,6 +171,7 @@ private fun CircularCompass(
 private fun NotSupportedCompass(
     modifier: Modifier,
     colors: CompassColors,
+    dimensions: CompassDimensions,
     minSize: Dp,
     content: @Composable BoxScope.() -> Unit,
 ) {
@@ -173,26 +183,34 @@ private fun NotSupportedCompass(
         color = colors.unsupportedContainerColor,
         contentColor = colors.unsupportedContentColor,
         border = BorderStroke(
-            width = CompassDefaults.OutlineStrokeWidth,
+            width = dimensions.outlineStrokeWidth,
             color = colors.outlineColor
         ),
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(all = 24.dp),
-            contentAlignment = Alignment.Center,
-            content = content,
-        )
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val dimensionScale = dimensions.scaleFor(availableSize = minCompassDimension())
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(all = dimensions.contentPadding.scaledBy(scale = dimensionScale)),
+                contentAlignment = Alignment.Center,
+                content = content,
+            )
+        }
     }
 }
 
 private fun DrawScope.drawCircularCompass(
     headingDegrees: Float,
     colors: CompassColors,
+    dimensions: CompassDimensions,
+    tickDensity: CompassTickDensity,
+    highlightDirectionDegrees: Float?,
+    dimensionScale: Float,
 ) {
     val radius = size.minDimension / 2f
-    val outlineStroke = CompassDefaults.OutlineStrokeWidth.toPx()
+    val outlineStroke = scaledPx(value = dimensions.outlineStrokeWidth, scale = dimensionScale)
 
     drawCircle(
         color = colors.outlineColor,
@@ -203,32 +221,52 @@ private fun DrawScope.drawCircularCompass(
     drawTicks(
         headingDegrees = headingDegrees,
         colors = colors,
+        dimensions = dimensions,
+        tickDensity = tickDensity,
+        dimensionScale = dimensionScale,
     )
+    highlightDirectionDegrees?.let { directionDegrees ->
+        drawHighlightDirection(
+            headingDegrees = headingDegrees,
+            directionDegrees = directionDegrees,
+            colors = colors,
+            dimensions = dimensions,
+            dimensionScale = dimensionScale,
+        )
+    }
     drawCardinalLabels(
         headingDegrees = headingDegrees,
         colors = colors,
+        dimensions = dimensions,
+        dimensionScale = dimensionScale,
     )
-    drawNeedle(colors = colors)
+    drawNeedle(
+        colors = colors,
+        dimensions = dimensions,
+        dimensionScale = dimensionScale,
+    )
 }
 
 private fun DrawScope.drawTicks(
     headingDegrees: Float,
     colors: CompassColors,
+    dimensions: CompassDimensions,
+    tickDensity: CompassTickDensity,
+    dimensionScale: Float,
 ) {
     val radius = size.minDimension / 2f
-    val minorTickLength = CompassDefaults.MinorTickLength.toPx()
-    val majorTickLength = CompassDefaults.MajorTickLength.toPx()
-    val minorStrokeWidth = CompassDefaults.MinorTickStrokeWidth.toPx()
-    val majorStrokeWidth = CompassDefaults.MajorTickStrokeWidth.toPx()
+    val minorTickLength = scaledPx(value = dimensions.minorTickLength, scale = dimensionScale)
+    val majorTickLength = scaledPx(value = dimensions.majorTickLength, scale = dimensionScale)
+    val minorStrokeWidth = scaledPx(value = dimensions.minorTickStrokeWidth, scale = dimensionScale)
+    val majorStrokeWidth = scaledPx(value = dimensions.majorTickStrokeWidth, scale = dimensionScale)
 
     rotate(degrees = -headingDegrees, pivot = center) {
-        for (tick in 0 until TICK_COUNT) {
-            val degrees = tick * TICK_INTERVAL_DEGREES
-            val isMajor = degrees % MAJOR_TICK_INTERVAL_DEGREES == 0
+        tickDensity.tickDegrees().fastForEach { degrees ->
+            val isMajor = degrees.isCardinalTick() || degrees % tickDensity.majorTickDegrees == 0
             val tickLength = if (isMajor) majorTickLength else minorTickLength
             val strokeWidth = if (isMajor) majorStrokeWidth else minorStrokeWidth
-            val start = center.pointAt(radius - tickLength, degrees.toFloat())
-            val end = center.pointAt(radius, degrees.toFloat())
+            val start = center.pointAt(radius = radius - tickLength, degrees = degrees.toFloat())
+            val end = center.pointAt(radius = radius, degrees = degrees.toFloat())
 
             drawLine(
                 color = colors.tickColor,
@@ -241,15 +279,54 @@ private fun DrawScope.drawTicks(
     }
 }
 
+private fun DrawScope.drawHighlightDirection(
+    headingDegrees: Float,
+    directionDegrees: Float,
+    colors: CompassColors,
+    dimensions: CompassDimensions,
+    dimensionScale: Float,
+) {
+    val radius = size.minDimension / 2f
+    val startRadius = radius * dimensions.highlightStartRadiusRatio
+    val endRadius = radius * dimensions.highlightEndRadiusRatio
+    val strokeWidth = scaledPx(
+        value = dimensions.highlightStrokeWidth,
+        scale = dimensionScale,
+    )
+    val normalizedDirection = normalizeCompassDegrees(directionDegrees)
+
+    rotate(degrees = -headingDegrees, pivot = center) {
+        drawLine(
+            color = colors.highlightColor,
+            start = center.pointAt(
+                radius = startRadius,
+                degrees = normalizedDirection,
+            ),
+            end = center.pointAt(
+                radius = endRadius,
+                degrees = normalizedDirection,
+            ),
+            strokeWidth = strokeWidth,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
 private fun DrawScope.drawCardinalLabels(
     headingDegrees: Float,
     colors: CompassColors,
+    dimensions: CompassDimensions,
+    dimensionScale: Float,
 ) {
-    val labelRadius = size.minDimension / 2f - CompassDefaults.CardinalLabelInset.toPx()
+    val labelRadius = (size.minDimension / 2f - scaledPx(
+        value = dimensions.cardinalLabelInset,
+        scale = dimensionScale
+    )
+            ).coerceAtLeast(minimumValue = 0f)
     val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = colors.cardinalColor.toArgb()
         textAlign = Paint.Align.CENTER
-        textSize = CompassDefaults.CardinalLabelSize.toPx()
+        textSize = dimensions.cardinalLabelSize.toPx() * dimensionScale
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     }
 
@@ -271,23 +348,28 @@ private fun DrawScope.drawCardinalLabels(
     }
 }
 
-private fun DrawScope.drawNeedle(colors: CompassColors) {
+private fun DrawScope.drawNeedle(
+    colors: CompassColors,
+    dimensions: CompassDimensions,
+    dimensionScale: Float,
+) {
     val radius = size.minDimension / 2f
-    val topLength = radius * 0.58f
-    val tailLength = radius * 0.36f
-    val halfNeedleWidth = CompassDefaults.NeedleWidth.toPx() / 2f
-    val centerPinRadius = CompassDefaults.NeedleWidth.toPx() * 0.65f
+    val topLength = radius * dimensions.needleLengthRatio
+    val tailLength = radius * dimensions.needleTailLengthRatio
+    val needleWidth = scaledPx(dimensions.needleWidth, dimensionScale)
+    val halfNeedleWidth = needleWidth / 2f
+    val centerPinRadius = needleWidth * dimensions.centerPinRadiusRatio
 
     val northNeedle = Path().apply {
-        moveTo(center.x, center.y - topLength)
-        lineTo(center.x - halfNeedleWidth, center.y + centerPinRadius)
-        lineTo(center.x + halfNeedleWidth, center.y + centerPinRadius)
+        moveTo(x = center.x, y = center.y - topLength)
+        lineTo(x = center.x - halfNeedleWidth, y = center.y + centerPinRadius)
+        lineTo(x = center.x + halfNeedleWidth, y = center.y + centerPinRadius)
         close()
     }
     val southNeedle = Path().apply {
-        moveTo(center.x, center.y + tailLength)
-        lineTo(center.x - halfNeedleWidth * 0.65f, center.y - centerPinRadius)
-        lineTo(center.x + halfNeedleWidth * 0.65f, center.y - centerPinRadius)
+        moveTo(x = center.x, y = center.y + tailLength)
+        lineTo(x = center.x - halfNeedleWidth * 0.65f, y = center.y - centerPinRadius)
+        lineTo(x = center.x + halfNeedleWidth * 0.65f, y = center.y - centerPinRadius)
         close()
     }
 
@@ -301,20 +383,46 @@ private fun DrawScope.drawNeedle(colors: CompassColors) {
     )
 }
 
+private fun CompassTickDensity.tickDegrees(): List<Int> {
+    val degrees = sortedSetOf<Int>()
+    for (degree in 0 until FULL_CIRCLE_DEGREES step minorTickDegrees) {
+        degrees += degree
+    }
+    for (degree in 0 until FULL_CIRCLE_DEGREES step majorTickDegrees) {
+        degrees += degree
+    }
+    CardinalTickDegrees.forEach { degrees += it }
+    return degrees.toList()
+}
+
+private fun Int.isCardinalTick(): Boolean = this in CardinalTickDegrees
+
+private fun CompassDimensions.scaleFor(availableSize: Dp): Float {
+    if (!autoScale) return 1f
+
+    return (availableSize.value / scaleBaselineSize.value)
+        .coerceIn(minimumScale, maximumScale)
+}
+
+private fun Dp.scaledBy(scale: Float): Dp = (value * scale).dp
+
+private fun DrawScope.scaledPx(value: Dp, scale: Float): Float = value.toPx() * scale
+
+private fun BoxWithConstraintsScope.minCompassDimension(): Dp = when {
+    maxWidth == Dp.Infinity && maxHeight == Dp.Infinity -> CompassDefaults.MinSize
+    maxWidth == Dp.Infinity -> maxHeight
+    maxHeight == Dp.Infinity -> maxWidth
+    maxWidth < maxHeight -> maxWidth
+    else -> maxHeight
+}
+
 private fun Offset.pointAt(radius: Float, degrees: Float): Offset {
     val radians = Math.toRadians((degrees - NORTH_OFFSET_DEGREES).toDouble())
     return Offset(
-        x = x + radius * cos(radians).toFloat(),
-        y = y + radius * sin(radians).toFloat(),
+        x = x + radius * cos(x = radians).toFloat(),
+        y = y + radius * sin(x = radians).toFloat(),
     )
 }
-
-private fun Float.toHeadingText(): String {
-    val degrees = roundToInt().floorMod(FULL_CIRCLE_DEGREES)
-    return "$degrees\u00B0"
-}
-
-private fun Int.floorMod(modulus: Int): Int = ((this % modulus) + modulus) % modulus
 
 
 @Composable
